@@ -1344,6 +1344,67 @@ def sweepPosition(low_n, high_n, max_l, qMax, soi, b_field, e_field, rf_freq, rf
 # Data Loading and Fitting
 #
 ###########################################################################
+def generateSingletTripletStates(stateList, qMax, StateS, StateP):
+    '''
+    This function computes the v vectors which getFracsOfState utilizes to find state overlaps.
+    Specifically the user hands in a pair of S and P states for which the resonant singlet and triplet
+    state v's are computed.
+    Inputs: 
+        stateList: List of single atom states
+        qMax: Maximum Floquet index
+        StateS: the single atom state corresponding to the s state of choice
+        StateP: the single atom state corresponding to the p state of choice
+    Outputs:
+        Varray: an array of v vectors.
+                0th element is the v vector for the |++> state
+                1st element is the v vector for the |+-> + |-+>  state
+                2nd element is the v vector for the |-->  state
+                3rd element is the v vector for the |+->  |-+>  state
+    '''
+    StateSS = twoAtomState.fromOneAtomStates(StateS,StateS)
+    StateSP = twoAtomState.fromOneAtomStates(StateS,StateP)
+    StatePS = twoAtomState.fromOneAtomStates(StateP,StateS)
+    StatePP = twoAtomState.fromOneAtomStates(StateP,StateP)
+
+    StateSP.q = -1
+    StatePS.q = -1
+    StatePP.q = -2
+
+    twoAtomFSL = np.array(getTwoAtomFloquetStateList(stateList,qMax),dtype = 'object')
+
+    ssInd = np.where(twoAtomFSL == StateSS)[0][0]
+    spInd = np.where(twoAtomFSL == StateSP)[0][0]
+    psInd = np.where(twoAtomFSL == StatePS)[0][0]
+    ppInd = np.where(twoAtomFSL == StatePP)[0][0]
+
+    Varray = [None]*4
+
+    VtripPlus = np.zeros(len(twoAtomFSL))
+    VtripPlus[ssInd] = 1/2
+    VtripPlus[spInd] = 1/2
+    VtripPlus[psInd] = 1/2
+    VtripPlus[ppInd] = 1/2
+
+    VtripMinus = np.zeros(len(twoAtomFSL))
+    VtripMinus[ssInd] = 1/2
+    VtripMinus[spInd] = -1/2
+    VtripMinus[psInd] = -1/2
+    VtripMinus[ppInd] = 1/2
+
+    VtripZero = np.zeros(len(twoAtomFSL))
+    VtripZero[ssInd] = 1/np.sqrt(2)
+    VtripZero[ppInd] =  -1/np.sqrt(2)
+
+    VsingletZero = np.zeros(len(twoAtomFSL))
+    VsingletZero[psInd] = 1/np.sqrt(2)
+    VsingletZero[spInd] = -1/np.sqrt(2)
+
+    Varray[0] = VtripPlus
+    Varray[1] = VtripZero
+    Varray[2] = VtripMinus
+    Varray[3] = VsingletZero
+
+    return Varray
 
 def loadRsweepData(filename):
     '''
@@ -1408,6 +1469,7 @@ def AnalyzeImportedSweepData(dfs,stateIndices,twoAtomFSLlist,SOIList):
         stateLenVec[i] = len(stateIndices[i])
 
     Es = np.zeros((len(dfs), int(max(rLenVec)), int(max(stateLenVec))))
+    EvecsOut = [None] * len(dfs)
     rsArr = np.zeros((len(dfs), int(max(rLenVec)), int(max(stateLenVec))))
     eigenstateInds = np.zeros((len(dfs), int(max(rLenVec)), int(max(stateLenVec))), dtype=int)
     fosArr = np.zeros((len(dfs), int(max(rLenVec)), int(max(stateLenVec))))
@@ -1418,6 +1480,8 @@ def AnalyzeImportedSweepData(dfs,stateIndices,twoAtomFSLlist,SOIList):
 
     for fileInd in range(len(dfs)):
         low_n, high_n, max_l, qMax, _, si, _, _, _, _, _, _, _, _, rs, evals, evecs = loadRsweepData(dfs[fileInd])
+
+        EvecsOut[fileInd] = evecs
 
         if len(twoAtomFSLlist)==1:
             twoAtomFSL = twoAtomFSLlist[0]
@@ -1476,11 +1540,105 @@ def AnalyzeImportedSweepData(dfs,stateIndices,twoAtomFSLlist,SOIList):
                     fitParams[fileInd,s,:] = popt
 
 
-    return Es, rsArr, eigenstateInds, fosArr, fitParams
+    return Es, rsArr, eigenstateInds, fosArr, fitParams, EvecsOut
+ 
+def AnalyzeImportedSweepDataOverlap(dfs,stateIndices,oneAtomFSLlist,qMaxList,vList):
+    rLenVec = np.zeros(len(dfs))
+    for fileInd in range(len(dfs)):
+        filename = dfs[fileInd]
+        f = h5.File(filename, "r")
+        keys = np.array(list(f.keys()))
+        rLenVec[fileInd] = len(keys)
+
+    stateLenVec = np.zeros(len(dfs))
+    for i in range(len(stateIndices)):
+        stateLenVec[i] = len(stateIndices[i])
+
+    Es = np.zeros((len(dfs), int(max(rLenVec)), int(max(stateLenVec))))
+    EvecsOut = [None] * len(dfs)
+    rsArr = np.zeros((len(dfs), int(max(rLenVec)), int(max(stateLenVec))))
+    eigenstateInds = np.zeros((len(dfs), int(max(rLenVec)), int(max(stateLenVec))), dtype=int)
+    fosArr = np.zeros((len(dfs), int(max(rLenVec)), int(max(stateLenVec))))
+    # Optional additional array for fitting
+    # Indices: {file index, state number index, fit parameter [C3, C6, offset]}
+    fitParams = np.zeros((len(dfs), int(max(stateLenVec)), 3))
 
 
-        
-def plotAnalyzedSweepData(Es, rsArr, fitParams, stateIndices, dfs, Eb, refBool,ymin, ymax):
+    for fileInd in range(len(dfs)):
+        low_n, high_n, max_l, qMax, _, si, _, _, _, _, _, _, _, _, rs, evals, evecs = loadRsweepData(dfs[fileInd])
+
+        EvecsOut[fileInd] = evecs
+
+        if len(oneAtomFSLlist)==1:
+            oneAtomFSL = oneAtomFSLlist[0]
+        else:
+            oneAtomFSL = oneAtomFSLlist[fileInd]
+
+        if len(qMaxList)==1:
+            qMax = qMaxList[0]
+        else:
+            qMax = qMaxList[fileInd]
+
+        if len(vList)==1:
+            vTemp = vList[0]
+        else:
+            vTemp = vList[fileInd]
+
+        if len(stateIndices)==1:
+            stateIndicesTemp = stateIndices[0]
+        else:
+            stateIndicesTemp = stateIndices[fileInd]    
+
+        #twoAtomFSL = np.array(fl.getTwoAtomFloquetStateList(stateList,2),dtype = 'object') 
+
+    
+        for rInd in range(int(rLenVec[fileInd])-1,-1,-1):
+            ssVals = np.zeros(len(evecs[rInd]),dtype=np.complex_)
+            for evecInd in range(len(evecs[rInd])):
+                overlapVal = getFracsOfState(oneAtomFSL, qMax, evecs[rInd][evecInd], [], 3, v=vTemp)
+                if overlapVal>1:
+                    overlapVal = 1
+                ssVals[evecInd] = overlapVal
+
+                # ssVals[evecInd] = evecs[rInd][evecInd][soiInd]
+
+            sortedFOSInds = np.flip(np.argsort(np.abs(ssVals)))
+            # If we're at the largest distance, we don't have a prior
+            # state reference, but that's okay, we just pick the eigenstates
+            # with the largest SOI components
+            if (rInd == len(rs)-1):
+                for s in np.arange(len(stateIndicesTemp)):
+                    # For each of the states we want...
+                    eind = sortedFOSInds[stateIndicesTemp[s]] # That's our eigenstate
+                    ee = np.real(evals[rInd][eind])/1e6 # There's the energy
+                    # Store the data
+                    eigenstateInds[fileInd,rInd,s] = eind
+                    Es[fileInd,rInd,s] = ee
+                    rsArr[fileInd,rInd,s] = rs[rInd]
+                    fosArr[fileInd,rInd,s] = abs(ssVals)[eind]
+            else:
+                for s in np.arange(len(stateIndicesTemp)):
+                    # The algorithm is to find the eigenstate at this r value
+                    # that has the largest overlap with the correspondingly
+                    # indexed eigenstate at the previous r value. 
+                    prevEigenstate = evecs[rInd+1][eigenstateInds[fileInd,rInd+1,s]]
+                    overlaps = np.abs(np.dot(prevEigenstate, np.transpose(evecs[rInd])))**2
+                    eind = np.argmax(overlaps)
+                    ee = np.real(evals[rInd][eind])/1e6 # There's the energy
+                    # Store the data
+                    eigenstateInds[fileInd,rInd,s] = eind
+                    Es[fileInd,rInd,s] = ee
+                    rsArr[fileInd,rInd,s] = rs[rInd]
+                    fosArr[fileInd,rInd,s] = abs(ssVals)[eind]
+
+            for s in np.arange(len(stateIndicesTemp)):
+                popt, pcov = opt.curve_fit(lambda x, a, b, c: a/x**3 + b/x**6 + c, rsArr[fileInd,:-1,s], Es[fileInd,:-1,s], p0=np.array([-1e-14, 2e-28, 0.5]), maxfev=20000)
+                fitParams[fileInd,s,:] = popt
+
+
+    return Es, rsArr, eigenstateInds, fosArr, fitParams, EvecsOut
+
+def plotAnalyzedSweepData(Es, rsArr, fitParams, fosArr, stateIndices, dfs, Eb, refBool,ymin, ymax):
     colsBase = generate_shades([0,0,1],len(dfs),target_color=(0.7,0,0))
 
     stateLenVec = np.zeros(len(dfs))
@@ -1497,8 +1655,8 @@ def plotAnalyzedSweepData(Es, rsArr, fitParams, stateIndices, dfs, Eb, refBool,y
         for s in range(len(stateIndicesTemp)):
             cols[j,s,:,0] = colsBase[j][0];cols[j,s,:,1] = colsBase[j][1];cols[j,s,:,2] = colsBase[j][2]
             # This is opacity; if you want no opacity changes just set this to 1
-            # cols[j,s,:,3] = fosArr[j,:,s][:-1]
-            cols[j,s,:,3] = 1
+            cols[j,s,:,3] = fosArr[j,:,s][:-1]
+            #cols[j,s,:,3] = 1
 
     # This is a filled in array of r values for plotting
     # fit lines, shaded boundaries, etc.
@@ -1533,9 +1691,6 @@ def plotAnalyzedSweepData(Es, rsArr, fitParams, stateIndices, dfs, Eb, refBool,y
     #ax.set_title('Rabi Frequency 6 MHz')
     ax.set_ylim(ymin,ymax)
     plt.show()
-
-
-
 
 def GenerateSweepPlots(Es, rsArr, eigenstateInds, fosArr,stateIndices):
     ### This cell does the plotting.
@@ -1602,3 +1757,151 @@ def GenerateSweepPlots(Es, rsArr, eigenstateInds, fosArr,stateIndices):
     #ax.set_title('Rabi Frequency 6 MHz')
     ax.set_ylim(-8,8)
     plt.show()
+
+###########################################################################
+#
+# Utility Functions
+#
+###########################################################################
+
+# When using this, be sure to specify the Fourier component of the Floquet state!!!
+# Several operating modes depending on SAS:
+#     0 - find exactly and only soi
+#     ±1 - find soi ± the soi with the atom states flipped
+#     +2 - take the one-atom states |a> and |b> from soi and find
+#          (v[0] |a> + dot[1] |b>) × (dot[0] |a> + v[1] |b>)
+#     +3 - v should be a list representing the entire two-atom basis
+#          and this function will find the overlap with the state
+#          represented by the vector dot in that basis
+def getFracsOfState(oneAtomStateList, qMax, evecs, soi, SAS, stateInds = [], v = [], psfBool=0):
+    '''
+    This function gets a desired state's overlap with all of the eigenvectors of a system.
+    It is primarily used for color mapping in plotting.
+    Inputs:
+        oneAtomStateList: a Python list of oneAtomState objects that were the one-atom
+                          basis used when generating the input eigenvectors (so this
+                          function can reconstruct the basis that those eigenvectors are
+                          expressed in)
+        qMax: the maximum Fourier component used when generating the input eigenvectors
+              (so this function can reconstruct the basis that those eigenvectors are expressed in)
+        evecs: the eigenvectors of the system, with which to find the overlap
+               NB: this should be a 2D NumPy array whose ROWS are the eigenvectors, e.g.
+               evecs[0] is an eigenvector of the system; this is the TRANSPOSE of what
+               numpy.linalg.eigh() and scipy.sparse.eigs() return
+
+        The state with which to find the overlap is described jointly by several parameters:
+        soi, SAS, stateInds, and v.
+        
+        soi: the two-atom state info for this function to work with; in conjunction with input SAS
+             (see below) (this should be a twoAtomState object)
+        SAS: an integer that determines exactly what this function does:
+             0: find the overlap with the soi
+             ±1: find the overlap with |s1s2> ± |s2s1> where |s1s2> is the soi
+             +2: find the overlap with the state (v[0] |s1> + v[1] |s2>) × (v[0] |s1> + v[1] |s2>),
+                 where |s1s2> is the soi and v is a keyword argument
+             +3: find the overlap with the state given by the keyword argument v, expressed as
+                 a vector in the full, two-atom Floquet basis
+        stateInds (optional): a list of indices of states to keep in the two-atom Floquet basis; if
+                   keeping all of the states, use the empty set [] (default [])
+        v (optional unless SAS = +2 or +3):
+                If SAS = ± 2, should be a two-item list describing the one-atom state coefficients
+                with which to find the overlap. 
+                If SAS = +3, should be a (2*qMax+1)*len(oneAtomStateList)**2-length vector of
+                state coefficients describing a state in the two-atom Floquet basis with which to
+                find the overlap.
+        psfBool (optional unless SAS = 2): standing for "product state Floquet Boolean", when SAS = 2
+                this Boolean specifies whether the Floquet index of the corresponding two-atom
+                states |s1s1>,|s1s2>,|s2s1>,|s2s2> should all be the same as the Floquet index
+                of soi, or it should change to account for the s1->s2 transition requiring a photon.
+                1 if it should change, 0 by default. If 1, the order in which soi is specified
+                matters: the state not requiring a photon to get to should be specified first.
+                Note that I'm calling it a Boolean but it's really juust an integer; values like
+                2 (for two-photon transitions) or -1 (if you get the order wrong) will work too.
+        
+    Outputs:
+        cs: a len(evecs)-length list containing the overlaps (|<sA|sB>|^2) of every eigenvector with
+            the state of intereste described by soi, SAS, stateInds, and v
+    '''
+
+    # Get the two-atom Floquet state list
+    twoAtomFSL = np.array(getTwoAtomFloquetStateList(oneAtomStateList, qMax), dtype=object)
+    if (len(stateInds) != 0):
+        twoAtomFSL = np.array(twoAtomFSL.copy(), dtype=object)[stateInds]
+
+    # We will use v to take a dot product with our state, so based on SAS, set v appropriately
+    if (SAS == 0):
+        soiInd = np.where(twoAtomFSL == soi)[0][0]
+        v = np.zeros(len(twoAtomFSL)); v[soiInd] = 1
+    elif (abs(SAS) == 1):
+        soiInd = np.where(twoAtomFSL == soi)[0][0]
+        soi2 = twoAtomState(soi.n2,soi.l2,soi.j2,soi.mj2,soi.n1,soi.l1,soi.j1,soi.mj1,soi.q)
+        soiInd2 = np.where(twoAtomFSL == soi2)[0][0]
+        v = np.zeros(len(twoAtomFSL))
+        v[soiInd] = 1/np.sqrt(2); v[soiInd2] = SAS*1/np.sqrt(2)
+    elif (SAS == 2):
+        s1 = twoAtomState(soi.n1,soi.l1,soi.j1,soi.mj1,soi.n1,soi.l1,soi.j1,soi.mj1,soi.q+psfBool)
+        s2 = twoAtomState(soi.n1,soi.l1,soi.j1,soi.mj1,soi.n2,soi.l2,soi.j2,soi.mj2,soi.q)
+        s3 = twoAtomState(soi.n2,soi.l2,soi.j2,soi.mj2,soi.n1,soi.l1,soi.j1,soi.mj1,soi.q)
+        s4 = twoAtomState(soi.n2,soi.l2,soi.j2,soi.mj2,soi.n2,soi.l2,soi.j2,soi.mj2,soi.q-psfBool)
+        si1 = np.where(twoAtomFSL == s1)[0][0]; si2 = np.where(twoAtomFSL == s2)[0][0];
+        si3 = np.where(twoAtomFSL == s3)[0][0]; si4 = np.where(twoAtomFSL == s4)[0][0]
+        a = v[0]/np.linalg.norm(v); b = v[1]/np.linalg.norm(v)
+        v = np.zeros(len(twoAtomFSL))
+        v[si1] = np.conj(a)*a; v[si2] = np.conj(b)*a; v[si3] = np.conj(a)*b; v[si4] = np.conj(b)*b
+    elif (SAS == 3):
+        # v is already what we need for the next part
+        v = v/np.linalg.norm(v)
+        pass
+
+    # Now take the dot product
+    cs = np.abs(np.dot(v, np.transpose(evecs)))**2
+    # I think this can made into one line because NumPy is smart, but it's fine
+    #for i, vec in enumerate(evecs):
+    #    cs[i] = np.abs(np.dot(v, vec))**2
+    return cs
+
+def getStateOverlaps(states, qMax, a, b, evals, evecs, stateInds=[], thres=0.01, verbose=True):
+    '''
+    This function PRINTS state overlap data in human-readable format. 
+    Specifically, it selects an eigenvector and shows the coefficients for that
+    eigenstate in the bare two-atom Floquet basis.
+    Inputs:
+        states: a Python list of oneAtomState objects that were the one-atom
+                basis used when generating the input eigenvectors (so this
+                function can reconstruct the basis that those eigenvectors are
+                expressed in)
+        qMax: the maximum Fourier component used when generating the input eigenvectors
+              (so this function can reconstruct the basis that those eigenvectors are expressed in)
+        a: the key to get the eigenvectors from the dictionary evecs
+        b: the eigenvector to look at
+        evals: the DICTIONARY of eigenvalues of the system, as generated by most of the other
+               functions in this library (only used for printing additional info)
+        evecs: the DICTIONARY of eigenvectors of the system, as generated by most of the other
+               functions in this library, with keys 0, 1, 2, etc (integers, not strings)
+               corresponding to rf frequencies or other parameters
+        stateInds (optional): a list of indices of states to keep in the two-atom Floquet basis; if
+                   keeping all of the states, use the empty set [] (default [])
+        thres (optional): a threshold |coeff|^2 above which to print info and below which to
+                   not (default 0.01)
+    Outputs: None (only printing)
+    '''
+    stateListF1 = np.array(getTwoAtomFloquetStateList(states, qMax), dtype=object)
+    if (len(stateInds) != 0):
+        stateListF1 = stateListF1[stateInds]
+    
+    inds = np.where(np.abs(evecs[a][b])**2 > thres)[0]
+
+    stateInds = np.zeros(len(inds))
+    evecOverlaps = np.zeros(len(inds))
+    states = np.array([], dtype='object')
+    #if verbose:
+    print("Eigenenergy:", np.real(evals[a][b])/1e6, "MHz")
+    for i, ind in enumerate(inds):
+        stateInds[i] = ind
+        evecOverlaps[i] = evecs[a][b][ind]
+        states = np.append(states, stateListF1[ind])
+        #if verbose:
+        print(("{:.0f}\t{:.4f}\t{:.4f}\t" + str(np.asarray(stateListF1, dtype='object')[ind])).format(ind, evecs[a][b][ind], np.abs(evecs[a][b][ind])**2))
+
+    #return evals[a][b], stateInds, evecOverlaps, states
+
